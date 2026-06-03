@@ -29,12 +29,7 @@
     "owner": "ivault-ai",
     "plugins": [
       "expo-secure-store",
-      [
-        "expo-audio",
-        {
-          "microphonePermission": "Allow iVault to access your microphone for voice input."
-        }
-      ]
+      "expo-notifications"
     ]
   }
 }
