@@ -131,12 +131,15 @@ export default function App() {
       await recorder.stop();
       const uri = recorder.uri;
       if (!uri) { setLoading(false); return; }
-      const audioResp = await fetch(uri);
-      const blob = await audioResp.blob();
+      // RN can't build a Blob from an ArrayBuffer ("Creating blobs from
+      // ArrayBuffer not supported"), so read the recording off disk as base64
+      // via expo-file-system, decode to raw bytes, and POST those to Deepgram.
+      const b64 = new File(uri).base64();
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const dg = await fetch(DG_LISTEN, {
         method: 'POST',
         headers: { Authorization: 'Token ' + DEEPGRAM_KEY, 'Content-Type': 'audio/m4a' },
-        body: blob,
+        body: bytes,
       });
       const dj = await dg.json();
       const transcript = (dj?.results?.channels?.[0]?.alternatives?.[0]?.transcript || '').trim();
