@@ -15,10 +15,20 @@
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
-      }
+      },
+      "package": "com.ivaultai.ivaultfresh"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "df47368d-2eec-4584-8aa7-5b20f862366d"
+      }
+    },
+    "owner": "ivault-ai",
+    "plugins": [
+      "expo-secure-store"
+    ]
   }
 }
