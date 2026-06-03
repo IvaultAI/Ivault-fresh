@@ -1,17 +1,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, KeyboardAvoidingView, Platform, ActivityIndicator, SafeAreaView, StatusBar, Animated, Easing } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { useAudioRecorder, RecordingPresets, AudioModule, setAudioModeAsync, createAudioPlayer } from 'expo-audio';
-import { File, Paths } from 'expo-file-system';
 
 const API = 'https://api.ivaultai.com';
-
-// Deepgram key sourced from /opt/ivault/secrets/deepgram.json at build time.
-// NOTE: this is embedded in the client bundle and is therefore extractable from
-// a shipped build. For production, proxy STT/TTS through api.ivaultai.com instead.
-const DEEPGRAM_KEY = '6fe38507dc54907270eace8d9c6db93b6d5bed40';
-const DG_LISTEN = 'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true';
-const DG_SPEAK = 'https://api.deepgram.com/v1/speak?model=aura-asteria-en&encoding=mp3&bit_rate=48000';
 
 // Palette mirrors the iVault web portal (app/agent_mike.html).
 const C = {
@@ -72,12 +63,8 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [recording, setRecording] = useState(false);
-  const [ttsOn, setTtsOn] = useState(true);
   const chatId = useRef('chat_' + Date.now());
   const listRef = useRef();
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const playerRef = useRef(null);
 
   const save = async () => {
     await SecureStore.setItemAsync('token', token);
@@ -101,80 +88,10 @@ export default function App() {
       const d = await r.json();
       const reply = d.reply || 'No response';
       addMsg('assistant', reply);
-      speak(reply);
     } catch (e) {
       addMsg('assistant', 'Error: ' + e.message);
     }
     setLoading(false);
-  };
-
-  // --- Deepgram STT: record on tap, transcribe, insert + auto-send ---
-  const toggleMic = async () => {
-    if (recording) { await stopAndTranscribe(); return; }
-    try {
-      const perm = await AudioModule.requestRecordingPermissionsAsync();
-      if (!perm.granted) { addMsg('assistant', 'Microphone permission denied.'); return; }
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      setRecording(true);
-    } catch (e) {
-      setRecording(false);
-      addMsg('assistant', 'Mic error: ' + e.message);
-    }
-  };
-
-  const stopAndTranscribe = async () => {
-    setRecording(false);
-    setLoading(true);
-    try {
-      await recorder.stop();
-      const uri = recorder.uri;
-      if (!uri) { setLoading(false); return; }
-      // RN can't build a Blob from an ArrayBuffer ("Creating blobs from
-      // ArrayBuffer not supported"), so read the recording off disk as base64
-      // via expo-file-system, decode to raw bytes, and POST those to Deepgram.
-      const b64 = new File(uri).base64();
-      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-      const dg = await fetch(DG_LISTEN, {
-        method: 'POST',
-        headers: { Authorization: 'Token ' + DEEPGRAM_KEY, 'Content-Type': 'audio/m4a' },
-        body: bytes,
-      });
-      const dj = await dg.json();
-      const transcript = (dj?.results?.channels?.[0]?.alternatives?.[0]?.transcript || '').trim();
-      setLoading(false);
-      if (transcript) { await send(transcript); }
-      else { addMsg('assistant', "(Didn't catch that — try again.)"); }
-    } catch (e) {
-      setLoading(false);
-      addMsg('assistant', 'STT error: ' + e.message);
-    }
-  };
-
-  // --- Deepgram Aura TTS: synthesize reply and play it back ---
-  const speak = async (text) => {
-    if (!ttsOn || !text) return;
-    try {
-      const res = await fetch(DG_SPEAK, {
-        method: 'POST',
-        headers: { Authorization: 'Token ' + DEEPGRAM_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) return;
-      const buf = await res.arrayBuffer();
-      const bytes = new Uint8Array(buf);
-      const file = new File(Paths.cache, `tts_${Date.now()}.mp3`);
-      file.create({ overwrite: true });
-      file.write(bytes);
-      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false });
-      if (playerRef.current) { try { playerRef.current.remove(); } catch (_) {} }
-      const player = createAudioPlayer({ uri: file.uri });
-      playerRef.current = player;
-      player.play();
-    } catch (_) {
-      // TTS is best-effort; ignore playback errors
-    }
   };
 
   if (!saved) return (
@@ -197,8 +114,7 @@ export default function App() {
       </View>
 
       {/* 2. Orb — pulsing blue dot, center, idle animation */}
-      <Orb active={recording} />
-      <Text style={s.status}>{recording ? 'LISTENING…' : 'TAP TO TALK'}</Text>
+      <Orb active={false} />
 
       <KeyboardAvoidingView style={s.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <FlatList ref={listRef} style={s.flex} data={messages} keyExtractor={i => String(i.id)}
@@ -210,13 +126,12 @@ export default function App() {
           )} />
         {loading && <ActivityIndicator color={C.accent} style={{ margin: 8 }} />}
 
-        {/* 3. TAP TO TALK button at bottom — green pill */}
-        <TouchableOpacity style={[s.talkBtn, recording && s.talkBtnActive]} onPress={toggleMic} activeOpacity={0.85}>
-          <Text style={[s.talkText, recording && s.talkTextActive]}>{recording ? 'TAP TO STOP' : 'TAP TO TALK'}</Text>
-        </TouchableOpacity>
+        {/* 3. Voice placeholder — STT/TTS removed; voice feature pending */}
+        <View style={s.voiceSoon}>
+          <Text style={s.voiceSoonText}>Voice coming soon</Text>
+        </View>
 
         <View style={s.row}>
-          <TouchableOpacity style={s.spk} onPress={() => setTtsOn(v => !v)}><Text style={s.icon}>{ttsOn ? '🔊' : '🔇'}</Text></TouchableOpacity>
           <TextInput style={s.input2} value={input} onChangeText={setInput} placeholder="Message..." placeholderTextColor="#666" onSubmitEditing={() => send()} returnKeyType="send" />
           <TouchableOpacity style={s.send} onPress={() => send()}><Text style={s.btnText}>Send</Text></TouchableOpacity>
         </View>
@@ -245,7 +160,6 @@ const s = StyleSheet.create({
   },
   orbMid: { position: 'absolute', width: ORB * 0.82, height: ORB * 0.82, borderRadius: (ORB * 0.82) / 2, backgroundColor: C.orb2 },
   orbHi: { position: 'absolute', top: ORB * 0.16, left: ORB * 0.18, width: ORB * 0.5, height: ORB * 0.5, borderRadius: (ORB * 0.5) / 2, backgroundColor: C.orb1, opacity: 0.9 },
-  status: { color: C.muted, fontSize: 12, letterSpacing: 3, textTransform: 'uppercase', textAlign: 'center', marginBottom: 8 },
 
   // Connect screen + generic buttons
   input: { borderWidth: 1, borderColor: '#333', color: '#fff', padding: 12, borderRadius: 8, marginBottom: 12 },
@@ -259,20 +173,15 @@ const s = StyleSheet.create({
   msgText: { color: C.text },
   msgTextUser: { color: '#06101f', fontWeight: '600' },
 
-  // TAP TO TALK button (green pill)
-  talkBtn: {
-    alignSelf: 'center', backgroundColor: C.accent, borderRadius: 40,
-    paddingVertical: 17, paddingHorizontal: 52, marginTop: 6, marginBottom: 10,
-    shadowColor: C.accent, shadowOpacity: 0.34, shadowRadius: 18, shadowOffset: { width: 0, height: 8 }, elevation: 8,
+  // Voice placeholder (replaces the TAP TO TALK button while STT/TTS are disabled)
+  voiceSoon: {
+    alignSelf: 'center', borderRadius: 40, borderWidth: 1, borderColor: 'rgba(0,255,136,0.25)',
+    paddingVertical: 14, paddingHorizontal: 44, marginTop: 6, marginBottom: 10, backgroundColor: 'rgba(0,255,136,0.06)',
   },
-  talkBtnActive: { backgroundColor: C.danger, shadowColor: C.danger },
-  talkText: { color: '#06101f', fontSize: 15, fontWeight: '700', letterSpacing: 3, textTransform: 'uppercase' },
-  talkTextActive: { color: '#fff' },
+  voiceSoonText: { color: C.muted, fontSize: 13, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' },
 
   // Bottom input row
   row: { flexDirection: 'row', alignItems: 'center', padding: 8, backgroundColor: '#0d0d0d', paddingBottom: 16 },
   input2: { flex: 1, borderWidth: 1, borderColor: 'rgba(0,255,136,0.18)', color: '#fff', padding: 10, borderRadius: 12, marginRight: 8 },
   send: { backgroundColor: C.accent, paddingVertical: 10, paddingHorizontal: 16, borderRadius: 12, justifyContent: 'center' },
-  spk: { padding: 8, justifyContent: 'center', alignItems: 'center', marginRight: 4 },
-  icon: { fontSize: 18, color: '#fff' },
 });
