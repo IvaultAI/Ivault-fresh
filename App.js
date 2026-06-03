@@ -167,7 +167,9 @@ export default function App() {
         javaScriptEnabled
         domStorageEnabled
         mediaPlaybackRequiresUserAction={false}
-        allowsInlineMediaPlayback
+        allowsInlineMediaPlayback={true}
+        mediaCapturePermissionGrantType="grant"
+        onPermissionRequest={(request) => request.grant(request.resources)}
         originWhitelist={['*']}
         startInLoadingState
         onLoadEnd={onWebViewLoaded}
