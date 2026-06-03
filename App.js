@@ -94,8 +94,10 @@ export default function App() {
     })();
   }, []);
 
-  // Once a token is set, register for push exactly once.
-  useEffect(() => {
+  // Push registration is triggered after the WebView finishes loading
+  // (see onLoadEnd below), so the permission prompt appears once the portal
+  // is on screen rather than during the boot/token handshake. Runs once.
+  const onWebViewLoaded = useCallback(() => {
     if (saved && !pushDone.current) {
       pushDone.current = true;
       registerPush(saved);
@@ -168,6 +170,7 @@ export default function App() {
         allowsInlineMediaPlayback
         originWhitelist={['*']}
         startInLoadingState
+        onLoadEnd={onWebViewLoaded}
         renderLoading={() => (
           <View style={s.loading}>
             <ActivityIndicator color={C.accent} size="large" />

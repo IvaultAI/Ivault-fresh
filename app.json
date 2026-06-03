@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "ivault-fresh",
+    "name": "AIOS",
     "slug": "ivault-fresh",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -16,7 +16,10 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "package": "com.ivaultai.ivaultfresh"
+      "package": "com.ivaultai.ivaultfresh",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
