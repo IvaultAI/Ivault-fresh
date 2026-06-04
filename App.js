@@ -26,6 +26,55 @@ const DG_KEY = '6fe38507dc54907270eace8d9c6db93b6d5bed40';
 const DG_LISTEN =
   'https://api.deepgram.com/v1/listen?model=nova-2&smart_format=true&punctuate=true';
 
+// Bridge injected into the portal WebView once it loads. The portal's own
+// "Dictate" button (#dictateBtn in app/agent_mike.html) drives the browser's
+// SpeechRecognition API — which is undefined in a standalone Android/iOS
+// WebView, so the portal HIDES the whole dictate row and the button is dead in
+// the native app. This script un-hides the row, strips the portal's broken
+// Web-Speech click handler (by cloning the node), and rewires the button to
+// post {type:'dictate'} back to native, which then runs the SAME expo-audio →
+// Deepgram recording pipeline that the (now-removed) native FAB used. The
+// native side calls window.__ivDictate(state) to reflect record/transcribe UI.
+// No-ops gracefully on portals without a #dictateBtn (e.g. default agent.html).
+const DICTATE_BRIDGE_JS = `(function(){
+  try {
+    if (window.__ivDictWired) return;
+    var btn = document.getElementById('dictateBtn');
+    if (!btn) return;
+    window.__ivDictWired = true;
+    var row = btn.closest('.dictate-row');
+    if (row) row.style.display = '';
+    var hint = document.getElementById('dictateHint');
+    // Cloning drops the portal's SpeechRecognition click listener.
+    var fresh = btn.cloneNode(true);
+    fresh.id = 'dictateBtn';
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh.disabled = false;
+    fresh.addEventListener('click', function(){
+      var ci = document.getElementById('chatInput');
+      if (ci && ci.disabled) return;            // wait for a live session
+      if (window.ReactNativeWebView) {
+        window.ReactNativeWebView.postMessage(JSON.stringify({type:'dictate'}));
+      }
+    });
+    window.__ivDictate = function(state){
+      if (state === 'recording'){
+        fresh.classList.add('rec');
+        fresh.innerHTML = '\\u23F9 Stop';
+        if (hint) hint.textContent = 'Listening\\u2026';
+      } else if (state === 'transcribing'){
+        fresh.classList.remove('rec');
+        fresh.innerHTML = '\\u2026 Working';
+        if (hint) hint.textContent = 'Transcribing\\u2026';
+      } else {
+        fresh.classList.remove('rec');
+        fresh.innerHTML = '\\uD83C\\uDFA4 Dictate';
+        if (hint) hint.textContent = 'Tap to speak \\u2192 text';
+      }
+    };
+  } catch (e) {}
+})(); true;`;
+
 // Palette mirrors the iVault web portal (app/agent_mike.html).
 const C = {
   bg: '#0a0a0a',
@@ -100,7 +149,15 @@ async function registerPush(agentToken) {
       return null;
     }
 
-    const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+    // In production/preview builds expoConfig.extra can be stripped; fall back
+    // to easConfig. getExpoPushTokenAsync THROWS without a projectId, so guard.
+    const projectId =
+      Constants?.expoConfig?.extra?.eas?.projectId ??
+      Constants?.easConfig?.projectId;
+    if (!projectId) {
+      console.log('[push] no EAS projectId resolved; cannot fetch push token');
+      return null;
+    }
     const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
     const pushToken = tokenData.data;
 
@@ -174,6 +231,8 @@ export default function App() {
       pushDone.current = true;
       registerPush(saved);
     }
+    // Wire the portal's Dictate button to the native expo-audio recorder.
+    webRef.current?.injectJavaScript(DICTATE_BRIDGE_JS);
   }, [saved]);
 
   const save = useCallback(async () => {
@@ -187,34 +246,52 @@ export default function App() {
     setSaved(t);
   }, [token]);
 
-  // Deliver a transcript into the portal's chat composer and send it. The
-  // portal (app/agent.html) exposes #chatInput and a global sendChat().
-  const injectTranscript = useCallback((text) => {
+  // Push the dictate button's recording state into the portal so its label
+  // tracks the native recorder (see DICTATE_BRIDGE_JS / window.__ivDictate).
+  const setDictateState = useCallback((state) => {
+    webRef.current?.injectJavaScript(
+      `window.__ivDictate && window.__ivDictate(${JSON.stringify(state)}); true;`
+    );
+  }, []);
+
+  // Append a dictated transcript into the portal's chat composer for the user
+  // to review/send — it does NOT auto-send, matching the portal's own Dictate
+  // semantics. The portal (agent_mike.html) exposes #chatInput.
+  const injectDictation = useCallback((text) => {
     if (!text) return;
     const js = `(function(){try{
       var t = ${JSON.stringify(text)};
       var ta = document.getElementById('chatInput');
-      if (ta) { ta.value = t; ta.dispatchEvent(new Event('input', { bubbles: true })); }
-      if (typeof sendChat === 'function') { sendChat(); }
+      if (ta) {
+        var base = ta.value || '';
+        var pad = (base && !/\\s$/.test(base)) ? ' ' : '';
+        ta.value = base + pad + t;
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        ta.focus();
+      }
     } catch (e) {} })(); true;`;
     webRef.current?.injectJavaScript(js);
   }, []);
 
-  // Mic button: tap to start, tap again to stop → transcribe → inject.
+  // Recording: start → stop → transcribe → inject. Triggered by the portal's
+  // Dictate button via the WebView message bridge (onMessage below).
   const startRec = useCallback(async () => {
     try {
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
       setRecording(true);
+      setDictateState('recording');
     } catch (e) {
       console.log('[mic] start error:', e?.message || e);
       setRecording(false);
+      setDictateState('idle');
     }
-  }, [audioRecorder]);
+  }, [audioRecorder, setDictateState]);
 
   const stopRec = useCallback(async () => {
     setRecording(false);
     setTranscribing(true);
+    setDictateState('transcribing');
     try {
       await audioRecorder.stop();
       const uri = audioRecorder.uri;
@@ -223,20 +300,29 @@ export default function App() {
         return;
       }
       const transcript = await transcribe(uri);
-      if (transcript) injectTranscript(transcript);
+      if (transcript) injectDictation(transcript);
       else console.log('[mic] empty transcript');
     } catch (e) {
       console.log('[mic] stop/transcribe error:', e?.message || e);
     } finally {
       setTranscribing(false);
+      setDictateState('idle');
     }
-  }, [audioRecorder, injectTranscript]);
+  }, [audioRecorder, injectDictation, setDictateState]);
 
   const onMicPress = useCallback(() => {
     if (transcribing) return;       // ignore taps while uploading
     if (recording) stopRec();
     else startRec();
   }, [recording, transcribing, startRec, stopRec]);
+
+  // Messages from the portal WebView. The rewired Dictate button posts
+  // {type:'dictate'} to toggle the native recorder.
+  const onWebViewMessage = useCallback((event) => {
+    let data;
+    try { data = JSON.parse(event.nativeEvent.data); } catch { return; }
+    if (data?.type === 'dictate') onMicPress();
+  }, [onMicPress]);
 
   // Boot splash while SecureStore resolves.
   if (booting) {
@@ -297,28 +383,13 @@ export default function App() {
         originWhitelist={['*']}
         startInLoadingState
         onLoadEnd={onWebViewLoaded}
+        onMessage={onWebViewMessage}
         renderLoading={() => (
           <View style={s.loading}>
             <ActivityIndicator color={C.accent} size="large" />
           </View>
         )}
       />
-
-      {/* Native mic FAB — records via expo-audio, transcribes via Deepgram,
-          then injects the text into the portal's chat. This replaces the
-          unreliable in-WebView getUserMedia mic on standalone Android. */}
-      <TouchableOpacity
-        style={[s.mic, recording && s.micRec]}
-        onPress={onMicPress}
-        activeOpacity={0.85}
-        accessibilityLabel={recording ? 'Stop recording' : 'Start voice message'}
-      >
-        {transcribing ? (
-          <ActivityIndicator color="#000" />
-        ) : (
-          <Text style={s.micIcon}>{recording ? '■' : '🎤'}</Text>
-        )}
-      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -339,14 +410,4 @@ const s = StyleSheet.create({
     position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
     backgroundColor: C.bg, justifyContent: 'center', alignItems: 'center',
   },
-
-  mic: {
-    position: 'absolute', right: 18, bottom: 96,
-    width: 60, height: 60, borderRadius: 30,
-    backgroundColor: C.accent, justifyContent: 'center', alignItems: 'center',
-    shadowColor: '#000', shadowOpacity: 0.4, shadowRadius: 6, shadowOffset: { width: 0, height: 3 },
-    elevation: 6,
-  },
-  micRec: { backgroundColor: C.rec },
-  micIcon: { fontSize: 24, color: '#000' },
 });
